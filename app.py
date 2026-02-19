@@ -1,30 +1,58 @@
-from flask import Flask, Response
-import os
+from flask import Flask, Response, request, render_template_string
+import time
 
 app = Flask(__name__)
 
-HTML_PATH = "index.html"
+latest_frame = None
+last_health = 0
+stream_requested = False
+
+PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Webcam Live View</title>
+</head>
+<body>
+    <h2>Live Webcam</h2>
+    <img src="/video_feed" width="640">
+    <p>Last client health ping: {{health}} seconds ago</p>
+</body>
+</html>
+"""
 
 @app.route("/")
-@app.route("/index.html")
-def serve_index():
-    if not os.path.exists(HTML_PATH):
-        return "index.html nicht gefunden", 404
+def index():
+    global stream_requested
+    stream_requested = True
+    return render_template_string(PAGE, health=int(time.time() - last_health))
 
-    with open(HTML_PATH, "r", encoding="utf-8") as f:
-        html_content = f.read()
+@app.route("/upload_frame", methods=["POST"])
+def upload_frame():
+    global latest_frame
+    latest_frame = request.data
+    return "OK"
 
-    # Kein Browser-Cache → immer neu laden
-    return Response(
-        html_content,
-        mimetype="text/html",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Expires": "0"
-        }
-    )
+@app.route("/video_feed")
+def video_feed():
+    def generate():
+        global latest_frame
+        while True:
+            if latest_frame:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
+            time.sleep(0.03)
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route("/should_stream")
+def should_stream():
+    return {"stream": stream_requested}
+
+@app.route("/health", methods=["POST"])
+def health():
+    global last_health
+    last_health = time.time()
+    return "OK"
 
 if __name__ == "__main__":
-    # 0.0.0.0 = von außen erreichbar (Cloud!)
-    app.run(host="0.0.0.0", port=80)
+    app.run(host="0.0.0.0", port=5000)
