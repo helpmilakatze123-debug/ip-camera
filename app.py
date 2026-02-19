@@ -1,64 +1,94 @@
-from flask import Flask, Response, request, render_template_string
+from flask import Flask, Response, request, render_template_string, jsonify
 import time
+import threading
 
-app = Flask(__name__()
+app = Flask(__name__)
 
-)
 latest_frame = None
 last_health = 0
-stream_active = False
+viewers = 0
+selected_camera = 0
+lock = threading.Lock()
 
 PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>Live Webcam</title>
+<title>Camera Stream</title>
 </head>
 <body>
+
 <h2>Live Stream</h2>
-<img src="/video_feed" width="720">
-<p>Client health: {{health}} seconds ago</p>
+
+<label>Kamera auswählen:</label>
+<select id="camSelect" onchange="changeCam()">
+  <option value="0">Camera 0</option>
+  <option value="1">Camera 1</option>
+  <option value="2">Camera 2</option>
+  <option value="3">Camera 3</option>
+</select>
+
+<br><br>
+
+<img src="/video_feed" width="800">
+
+<script>
+function changeCam(){
+    const cam = document.getElementById("camSelect").value;
+    fetch("/set_camera/" + cam);
+}
+</script>
+
 </body>
 </html>
 """
 
 @app.route("/")
 def index():
-    global stream_active
-    stream_active = True
-    return render_template_string(PAGE, health=int(time.time() - last_health))
+    return PAGE
+
+@app.route("/set_camera/<int:cam>")
+def set_camera(cam):
+    global selected_camera
+    selected_camera = cam
+    return "OK"
 
 @app.route("/video_feed")
 def video_feed():
-    global stream_active
-    stream_active = True
+    global viewers
+
+    with lock:
+        viewers += 1
 
     def generate():
         global latest_frame
-        while True:
-            if latest_frame:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
-            else:
-                time.sleep(0.01)
+        try:
+            while True:
+                if latest_frame:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
+                else:
+                    time.sleep(0.01)
+        finally:
+            global viewers
+            with lock:
+                viewers -= 1
 
     return Response(generate(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
-@app.route("/upload_stream", methods=["POST"])
-def upload_stream():
+@app.route("/upload_frame", methods=["POST"])
+def upload_frame():
     global latest_frame
-    stream = request.stream
-    while True:
-        chunk = stream.read(4096)
-        if not chunk:
-            break
-        latest_frame = chunk
+    latest_frame = request.data
     return "OK"
 
-@app.route("/should_stream")
-def should_stream():
-    return {"stream": stream_active}
+@app.route("/control")
+def control():
+    return jsonify({
+        "stream": viewers > 0,
+        "camera": selected_camera
+    })
 
 @app.route("/health", methods=["POST"])
 def health():
