@@ -1,13 +1,12 @@
 from flask import Flask, Response, request, render_template_string
 import time
-import threading
 
-app = Flask(__name__)
+app = Flask(__name__()
 
+)
 latest_frame = None
 last_health = 0
-viewers = 0
-viewers_lock = threading.Lock()
+stream_active = False
 
 PAGE = """
 <!DOCTYPE html>
@@ -16,7 +15,7 @@ PAGE = """
 <title>Live Webcam</title>
 </head>
 <body>
-<h2>Live Webcam Stream</h2>
+<h2>Live Stream</h2>
 <img src="/video_feed" width="720">
 <p>Client health: {{health}} seconds ago</p>
 </body>
@@ -25,40 +24,41 @@ PAGE = """
 
 @app.route("/")
 def index():
+    global stream_active
+    stream_active = True
     return render_template_string(PAGE, health=int(time.time() - last_health))
-
-@app.route("/upload_frame", methods=["POST"])
-def upload_frame():
-    global latest_frame
-    latest_frame = request.data
-    return "OK"
 
 @app.route("/video_feed")
 def video_feed():
-    global viewers
-
-    with viewers_lock:
-        viewers += 1
+    global stream_active
+    stream_active = True
 
     def generate():
         global latest_frame
-        try:
-            while True:
-                if latest_frame:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
-                time.sleep(0.03)  # ~30 FPS
-        finally:
-            global viewers
-            with viewers_lock:
-                viewers -= 1
+        while True:
+            if latest_frame:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
+            else:
+                time.sleep(0.01)
 
     return Response(generate(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
+@app.route("/upload_stream", methods=["POST"])
+def upload_stream():
+    global latest_frame
+    stream = request.stream
+    while True:
+        chunk = stream.read(4096)
+        if not chunk:
+            break
+        latest_frame = chunk
+    return "OK"
+
 @app.route("/should_stream")
 def should_stream():
-    return {"stream": viewers > 0}
+    return {"stream": stream_active}
 
 @app.route("/health", methods=["POST"])
 def health():
